@@ -2,6 +2,8 @@
 # and a workspace (GOPATH) configured at /go.
 FROM golang
 
+RUN go install golang.org/x/net/html
+
 # Copy the local package files to the container's workspace.
 ADD . /go/src/github.com/NadirZenith/gowiki
 
@@ -13,7 +15,6 @@ WORKDIR /go/src/github.com/NadirZenith/gowiki
 # Build the outyet command inside the container.
 # (You may fetch or manage dependencies here,
 # either manually or with a tool like "godep".)
-#RUN go install github.com/NadirZenith/gowiki
 RUN go install
 
 # Run the outyet command by default when the container starts.
