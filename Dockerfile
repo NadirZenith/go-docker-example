@@ -2,7 +2,7 @@
 # and a workspace (GOPATH) configured at /go.
 FROM golang
 
-RUN go install golang.org/x/net/html
+RUN go get golang.org/x/net/html
 
 # Copy the local package files to the container's workspace.
 ADD . /go/src/github.com/NadirZenith/gowiki
