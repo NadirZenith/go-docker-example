@@ -1,0 +1,19 @@
+{{define "title"}}{{.Title}}{{end}}
+
+{{define "container"}}
+<div class="row">
+    <div class="col-lg-12">
+        <h1>Editing {{.Title}}</h1>
+
+        <form action="/save/{{.Title}}" method="POST">
+            <div class="form-group">
+                <textarea class="form-control" name="body" rows="20">{{printf "%s" .Body}}</textarea>
+            </div>
+            <div>
+                <input type="submit" value="Save" class="btn btn-primary">
+            </div>
+        </form>
+
+    </div>
+</div>
+{{end}}

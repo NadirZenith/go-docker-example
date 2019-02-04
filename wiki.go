@@ -1,41 +1,96 @@
 package main
 
 import (
-	"io/ioutil"
-	"net/http"
-	"log"
+	"bytes"
 	"html/template"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
-	"fmt"
-	"golang.org/x/net/html"
+	"strings"
+	"time"
 )
 
-var templates = template.Must(template.ParseFiles("edit.html", "view.html"))
+var tplPath = "./tpl"
+var dirPages = "pages"
+var dataPath = "./data"
 
-var validPath = regexp.MustCompile("^/(edit|save|view)/([a-zA-Z0-9]+)$")
+//var templates = template.Must(template.ParseFiles(tplPath+"/layout.html", tplPath+"/index.html"))
+
+var ulLinksTemplate = `
+<h2>{{.title}}</h2>
+<ul>
+	{{range $url, $text := .}}
+		<li><a href="{{$url}}">{{$text}}</a></li>
+	{{end}}
+</ul>`
+
+var validPath = regexp.MustCompile("^/(new|edit|save|view)/([a-zA-Z0-9]+)$")
+
+type Link struct {
+	url  string
+	text string
+}
 
 type Page struct {
-	Title string
-	Body  []byte
+	Title    string
+	Body     []byte
+	BodyHtml template.HTML
 }
+
+//func newPage(title string, body []byte, bodyHtml template.HTML) *Page {
+//	return &Page{Title: title, Body: body, BodyHtml: bodyHtml}
+//}
 
 func (p *Page) save() error {
 	filename := p.Title + ".txt"
-	return ioutil.WriteFile(filename, p.Body, 0600)
+	return ioutil.WriteFile(dataPath+"/"+filename, []byte(p.Body), 0600)
 }
 
 func loadPage(title string) (*Page, error) {
 	filename := title + ".txt"
-	body, err := ioutil.ReadFile(filename)
+	body, err := ioutil.ReadFile(dataPath + "/" + filename)
 	if err != nil {
 		return nil, err
 	}
+	//return &Page{Title: title, Body: template.HTML(body)}, nil
 	return &Page{Title: title, Body: body}, nil
 }
 
+func renderTemplate(w http.ResponseWriter, tmpl string, p *Page) {
+
+	var templates = template.Must(template.New("").Funcs(template.FuncMap{
+		"now": time.Now,
+	}).ParseFiles(
+		filepath.Join(tplPath, "parts/navigation.html"),
+		filepath.Join(tplPath, "parts/footer.html"),
+		filepath.Join(tplPath, "layout.html"),
+		filepath.Join(tplPath, tmpl+".html"),
+	))
+
+	err := templates.ExecuteTemplate(w, "layout", p)
+
+	if err != nil {
+		// Log the detailed error
+		log.Println(err.Error())
+		// Return a generic "Internal Server Error" message
+		http.Error(w, http.StatusText(500), 500)
+	}
+}
+//func newHandler(w http.ResponseWriter, r *http.Request) {
+//	//p, err := loadPage(title)
+//	//if err != nil {
+//		var p = &Page{Title: "New"}
+//	//}
+//	renderTemplate(w, "wiki/new", p)
+//}
+
 func saveHandler(w http.ResponseWriter, r *http.Request, title string) {
 	body := r.FormValue("body")
-	p := &Page{Title: title, Body: []byte(body)}
+	//wtitle := r.FormValue("title")
+	p := &Page{title, []byte(body), template.HTML("")}
 	err := p.save()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -49,7 +104,7 @@ func editHandler(w http.ResponseWriter, r *http.Request, title string) {
 	if err != nil {
 		p = &Page{Title: title}
 	}
-	renderTemplate(w, "edit", p)
+	renderTemplate(w, "wiki/edit", p)
 }
 
 func viewHandler(w http.ResponseWriter, r *http.Request, title string) {
@@ -58,20 +113,44 @@ func viewHandler(w http.ResponseWriter, r *http.Request, title string) {
 		http.Redirect(w, r, "/edit/"+title, http.StatusFound)
 		return
 	}
-	renderTemplate(w, "view", p)
+	renderTemplate(w, "wiki/view", p)
 }
 
-func renderTemplate(w http.ResponseWriter, tmpl string, p *Page) {
-	err := templates.ExecuteTemplate(w, tmpl+".html", p)
+func getNotesList(buffer *bytes.Buffer) {
+	// read data files
+	files, err := ioutil.ReadDir(dataPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Fatal(err)
+		panic(err)
+	}
+
+	// build links array
+	links := make(map[string]string)
+	for _, f := range files {
+		var file = strings.TrimSuffix(f.Name(), filepath.Ext(f.Name()))
+		links["/view/"+file] = file
+	}
+
+	// create template from links
+	t := template.New("t")
+	t, err = t.Parse(ulLinksTemplate)
+	if err != nil {
+		log.Fatal(err)
+		panic(err)
+	}
+
+	err = t.Execute(buffer, links)
+	if err != nil {
+		log.Fatal(err)
+		panic(err)
 	}
 }
 
-func makeHandler(fn func (http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+func makeHandler(fn func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Here we will extract the page title from the Request,
 		// and call the provided handler 'fn'
+		log.Print(r.URL.Path)
 		m := validPath.FindStringSubmatch(r.URL.Path)
 		if m == nil {
 			http.NotFound(w, r)
@@ -81,82 +160,52 @@ func makeHandler(fn func (http.ResponseWriter, *http.Request, string)) http.Hand
 	}
 }
 
-// ---------------------------------------------------------------
-func pageLinksHandler(w http.ResponseWriter, r *http.Request) {
-	url := r.URL.Query().Get("q")
-	fmt.Fprintf(w, "Page = %q\n", url)
-	if len(url) == 0 {
-		return
-	}
-	page, err := parse("https://" + url)
-	if err != nil {
-		fmt.Printf("Error getting page %s %s\n", url, err)
-		return
-	}
-	links := pageLinks(nil, page)
-	for _, link := range links {
-		fmt.Fprintf(w, "Link = %q\n", link)
-	}
-}
+func pageHandler(w http.ResponseWriter, r *http.Request) {
+	var pathPage = filepath.Clean(r.URL.Path)
+	var buffer bytes.Buffer
+	var title = ""
 
-
-func parse(url string) (*html.Node, error) {
-	fmt.Println(url)
-	r, err := http.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("Cannot get page")
+	// for index, fill buffer with notes list
+	if pathPage == "/" {
+		pathPage = "/index"
+		title = "Notes"
+		getNotesList(&buffer)
 	}
-	b, err := html.Parse(r.Body)
-	if err != nil {
-		return nil, fmt.Errorf("Cannot parse page")
-	}
-	return b, err
-}
+	pathPage = filepath.Join(dirPages, pathPage)
 
-func pageLinks(links []string, n *html.Node) []string {
-	if n.Type == html.ElementNode && n.Data == "a" {
-		for _, a := range n.Attr {
-			if a.Key == "href" {
-				links = append(links, a.Val)
-			}
+	// Return a 404 if the template doesn't exist
+	var templateFilePath = filepath.Join(tplPath, pathPage)
+	info, err := os.Stat(templateFilePath + ".html")
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
 		}
 	}
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		links = pageLinks(links, c)
+	// Return a 404 if the request is for a directory
+	if info.IsDir() {
+		http.NotFound(w, r)
+		return
 	}
-	return links
+
+	var page = &Page{Title: title, BodyHtml: template.HTML(buffer.Bytes())}
+
+	renderTemplate(w, pathPage, page)
 }
 
-func main() {
+func startHttp() {
+	fs := http.FileServer(http.Dir("static"))
+	http.HandleFunc("/", pageHandler)
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
+
+	//http.HandleFunc("/new", newHandler)
 	http.HandleFunc("/view/", makeHandler(viewHandler))
 	http.HandleFunc("/edit/", makeHandler(editHandler))
 	http.HandleFunc("/save/", makeHandler(saveHandler))
-	http.HandleFunc("/page-links", pageLinksHandler)
 
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
-// ------------------------------
-// example server
-// go build server.go
-// ./server
-// $ curl localhost:8080/monkeys
-// returns Hi there, i love monkeys
-//
-//package main
-//
-//import (
-//"fmt"
-//"log"
-//"net/http"
-//)
-//
-//func handler(w http.ResponseWriter, r *http.Request) {
-//	fmt.Fprintf(w, "Hi there, I love %s!", r.URL.Path[1:])
-//}
-//
-//func main() {
-//	http.HandleFunc("/", handler)
-//	log.Fatal(http.ListenAndServe(":8080", nil))
-//}
-
+func main() {
+	startHttp()
+}
